@@ -11,7 +11,7 @@
 
     main script for training and testing.
 """
-
+import cv2
 
 from config import args as args_config
 import time
@@ -44,7 +44,7 @@ import torch.distributed as dist
 import apex
 from apex.parallel import DistributedDataParallel as DDP
 from apex import amp
-
+from data import ToFDataset
 # Minimize randomness
 torch.manual_seed(args_config.seed)
 np.random.seed(args_config.seed)
@@ -52,6 +52,38 @@ random.seed(args_config.seed)
 torch.cuda.manual_seed_all(args_config.seed)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
+
+def visualize_tensor(img_tensor, mode, window="Image", depth_min=0, depth_max=1):  # depth_min=0.3, depth_max=0.6
+    img = img_tensor.cpu().detach().numpy()
+
+    if mode == 'rgb':
+        img = img.transpose((1, 2, 0))
+        img = (img * 255).astype(np.uint8)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        if window is not None:
+            cv2.imshow(window, img)
+    elif mode == 'depth':
+        img = img[0]
+        img[img == 0] = 1000
+        # print(np.max(img),np.min(img))
+        # print("o",img)
+        img = ((img - depth_min) * 255 / (depth_max - depth_min)).astype(np.uint8)
+
+        # img = ((img - depth_min) * 255 / (depth_max - depth_min))
+        # print("a",img)
+        img = cv2.applyColorMap(img, cv2.COLORMAP_JET)
+        # img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+
+        if window is not None:
+            cv2.imshow(window, img)
+    elif mode=='hole':
+        img = img[0]
+        img = ((img - depth_min) * 255 / (depth_max - depth_min)).astype(np.uint8)
+        img = cv2.applyColorMap(img, cv2.COLORMAP_BONE)
+    else:
+        print("Not support mode!")
+        return None
+    return img
 
 
 def check_args(args):
@@ -90,6 +122,7 @@ def train(gpu, args):
     data_train = data(args, 'train')
     data_val = data(args, 'val')
 
+    # print(len(data_train), len(data_val))
     sampler_train = DistributedSampler(
         data_train, num_replicas=args.num_gpus, rank=gpu)
     sampler_val = DistributedSampler(
@@ -177,7 +210,61 @@ def train(gpu, args):
         warm_up_cnt = 0.0
         warm_up_max_cnt = len(loader_train)+1.0
 
+
+
+
     for epoch in range(1, args.epochs+1):
+
+
+        # Val
+        torch.set_grad_enabled(False)
+        net.eval()
+
+        num_sample = len(loader_val) * loader_val.batch_size * args.num_gpus
+
+        if gpu == 0:
+            pbar = tqdm(total=num_sample)
+            log_cnt = 0.0
+            log_loss = 0.0
+
+        for batch, sample in enumerate(loader_val):
+            sample = {key: val.cuda(gpu) for key, val in sample.items()
+                      if val is not None}
+
+            output = net(sample)
+
+            loss_sum, loss_val = loss(sample, output)
+
+            # Divide by batch size
+            loss_sum = loss_sum / loader_val.batch_size
+            loss_val = loss_val / loader_val.batch_size
+
+            if gpu == 0:
+                metric_val = metric.evaluate(sample, output, 'train')
+                writer_val.add(loss_val, metric_val)
+
+                log_cnt += 1
+                log_loss += loss_sum.item()
+
+                current_time = time.strftime('%y%m%d@%H:%M:%S')
+                error_str = '{:<10s}| {} | Loss = {:.4f}'.format(
+                    'Val', current_time, log_loss / log_cnt)
+                pbar.set_description(error_str)
+                pbar.update(loader_val.batch_size * args.num_gpus)
+
+        if gpu == 0:
+            pbar.close()
+
+            writer_val.update(epoch, sample, output)
+            print('')
+
+            writer_val.save(epoch, batch, sample, output)
+
+        torch.set_grad_enabled(True)
+
+        scheduler.step()
+
+
         # Train
         net.train()
 
@@ -286,6 +373,23 @@ def train(gpu, args):
                       if val is not None}
 
             output = net(sample)
+
+            result_dir = os.path.join(args.save_dir, "intermediate_results")
+            os.makedirs(result_dir, exist_ok=True)
+            result_file_name = str(epoch) + '_' + str(batch) + ".png"
+            print(output['pred'].size())
+            input_depth_min = output['pred'][0].min().item()
+            input_depth_max = output['pred'][0].max().item()
+            final_pred = visualize_tensor(output['pred'][0], mode='depth', window=None, depth_min=input_depth_min,
+            depth_max=input_depth_max)
+            init_pred = visualize_tensor(output['pred_init'][0], mode='depth', window=None, depth_min=input_depth_min,
+            depth_max=input_depth_max)
+            gt_depth = visualize_tensor(sample['gt'][0], mode='depth', window=None, depth_min=input_depth_min,
+            depth_max=input_depth_max)
+            vis_full = np.vstack((final_pred, init_pred, gt_depth))
+            cv2.imwrite(os.path.join(result_dir, result_file_name), vis_full)
+
+
 
             loss_sum, loss_val = loss(sample, output)
 
