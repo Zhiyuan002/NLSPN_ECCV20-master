@@ -228,7 +228,15 @@ parser.add_argument('--no_warm_up',
                     action='store_false',
                     dest='warm_up',
                     help='no lr warm up')
-
+parser.add_argument(
+    "--d_reg_every",
+    type=int,
+    default=16,
+    help="interval of the applying r1 regularization",
+)
+parser.add_argument(
+    "--r1", type=float, default=10, help="weight of the r1 regularization"
+)
 # Logs
 parser.add_argument('--save',
                     type=str,

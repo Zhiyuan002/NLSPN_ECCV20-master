@@ -11,13 +11,13 @@
 
     main script for training and testing.
 """
-
+from torch import nn, autograd, optim
 import cv2
 from config import args as args_config
 import time
 import random
 import os
-
+from model.torch_utils.ops import conv2d_gradfix
 from data import ToFDataset
 from model.Discriminator import StyleGAN2
 from model.diffusion import Diffusion
@@ -117,6 +117,16 @@ def check_args(args):
             new_args.resume = args.resume
 
     return new_args
+
+
+def d_r1_loss(real_pred, real_img):
+    with conv2d_gradfix.no_weight_gradients():
+        grad_real, = autograd.grad(
+            outputs=real_pred.sum(), inputs=real_img, create_graph=True
+        )
+    grad_penalty = grad_real.pow(2).reshape(grad_real.shape[0], -1).sum(1).mean()
+
+    return grad_penalty
 
 
 def train(gpu, args):
@@ -300,60 +310,53 @@ def train(gpu, args):
             for _ in range(d_step):
                 # add_depth_save = add_depth
                 add_depth_save = sample_syn['depth_image']
-
-                # data_reshaped = add_depth_save.view(args.batch_size, -1)
-                #
-                # # Calculate min and max values for each sample separately
-                # min_vals = data_reshaped.min(dim=1, keepdim=True).values
-                # max_vals = data_reshaped.max(dim=1, keepdim=True).values
-                # min_vals = min_vals.view(args.batch_size, 1, 1, 1)
-                # max_vals = max_vals.view(args.batch_size, 1, 1, 1)
-                #
-                # # Perform min-max normalization separately for each sample
-                # add_depth_normalize = (add_depth_save - min_vals) / (max_vals - min_vals + 1e-8)
-
                 pred_depth_D_save = output_clone
-                # data_reshaped = pred_depth_D_save.view(args.batch_size, -1)
-                #
-                # # Calculate min and max values for each sample separately
-                # min_vals = data_reshaped.min(dim=1, keepdim=True).values
-                # max_vals = data_reshaped.max(dim=1, keepdim=True).values
-                # min_vals = min_vals.view(args.batch_size, 1, 1, 1)
-                # max_vals = max_vals.view(args.batch_size, 1, 1, 1)
-                #
-                # # Perform min-max normalization separately for each sample
-                # pred_depth_D_normalize = (pred_depth_D_save - min_vals) / (max_vals - min_vals + 1e-8)
-
-                # if (i + 1) % (args.i_print + 1) == 0:
-                #     visualize_tensor(pred_depth_D_normalize[0], window="add_depth", mode="depth")
-                #     cv2.waitKey(1000)
                 pred_depth_save = output['pred']
                 # vis = torch.cat([add_depth_save[0], pred_depth_D_save[0]],dim=1)
                 # visualize_tensor(vis,'depth','Syn',depth_min=0,depth_max=10)
                 # cv2.waitKey(2000)
-                real_diffuse, fake_diffuse, G_diffuse, real_t = diffuse(add_depth_save, pred_depth_D_save, pred_depth_save)
+                d_regularize = batch % args.d_reg_every == 0
+                add_depth = add_depth_save.requires_grad_(d_regularize)
+                real_diffuse, fake_diffuse, G_diffuse, real_t = diffuse(add_depth, pred_depth_D_save, pred_depth_save)
 
-                # real_diffuse = mask
-                # print(real_diffuse.size())
-                D_real_score = discr(real_diffuse)
-                D_real_score = D_real_score.squeeze()
+                # Dmain: Minimize logits for generated images.
 
                 # fake_diffuse, fake_t = diffuse(pred_depth_D_save)
                 D_fake_score = discr(fake_diffuse)
                 D_fake_score = D_fake_score.squeeze()
                 D_fake_loss = torch.nn.functional.softplus(D_fake_score).mean()
-                D_real_loss = torch.nn.functional.softplus(-D_real_score).mean()
-                D_train_loss = D_real_loss + D_fake_loss
 
-                D_optimizer.zero_grad()
-                D_train_loss.backward()
+                discr.zero_grad()
+                D_fake_loss.backward()
                 D_optimizer.step()
+
+                # Dmain: Maximize logits for real images.
+                # Dr1: Apply R1 regularization.
+                # print(real_diffuse.size())
+                D_real_score = discr(real_diffuse)
+                # D_real = D_real_score.clone().detach()
+                # D_real_score = D_real_score.squeeze()
+                D_real_loss = torch.nn.functional.softplus(-D_real_score)
+
+
+                if d_regularize:
+                    with conv2d_gradfix.no_weight_gradients():
+                        # print(D_real_score.sum().size(),add_depth.size())
+                        r1_grads=autograd.grad(outputs=[D_real_score.sum()],inputs=[add_depth],
+                                               create_graph=True,only_inputs=True)[0]
+                    r1_penalty = r1_grads.square().sum([1, 2, 3])
+                    r1_loss = r1_penalty * (args.r1 / 2)
+
+                    discr.zero_grad()
+                    ( r1_loss + D_real_loss + 0 * D_real_score[0]).mean().backward()
+                    D_optimizer.step()
 
                 real_t = real_t.float().mean()
                 writer_train.add_scalar('train/real_t', real_t, step)
                 writer_train.add_scalar('train/D_fake_loss', D_fake_loss, step)
-                writer_train.add_scalar('train/D_real_loss', D_real_loss, step)
-                writer_train.add_scalar('train/D_train_loss', D_train_loss, step)
+                writer_train.add_scalar('train/D_real_loss', D_real_loss.mean(), step)
+                writer_train.add_scalar('train/D_r1_loss', r1_loss.mean(), step)
+                # writer_train.add_scalar('train/D_train_loss', D_train_loss, step)
 
             G_result = (discr(G_diffuse)).squeeze()
             G_train_loss = torch.nn.functional.softplus(-G_result).mean()
