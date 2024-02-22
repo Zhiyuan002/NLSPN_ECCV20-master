@@ -155,11 +155,11 @@ def train(gpu, args):
     batch_size = args.batch_size // args.num_gpus
 
     loader_train = DataLoader(
-        dataset=data_train, batch_size=batch_size, shuffle=False,
+        dataset=data_train, batch_size=batch_size, shuffle=True,
         num_workers=args.num_threads, pin_memory=True, sampler=sampler_train,
         drop_last=True)
     loader_syn = DataLoader(
-        dataset=data_syn, batch_size=batch_size, shuffle=False,
+        dataset=data_syn, batch_size=batch_size, shuffle=True,
         num_workers=args.num_threads, pin_memory=True, sampler=sampler_syn,
         drop_last=True)
     loader_val = DataLoader(
@@ -172,7 +172,8 @@ def train(gpu, args):
     discr = StyleGAN2(size=32)
     discr = discr.cuda(gpu)
     diffuse = Diffusion().cuda()
-
+    if args.reverse_noise:
+        diffuse.p = 1
     net = model(args)
     net.cuda(gpu)
 
@@ -362,9 +363,10 @@ def train(gpu, args):
             G_train_loss = torch.nn.functional.softplus(-G_result).mean()
 
             if batch % 5000 == 0:
-                img_real = torch.cat([add_depth_save[0], real_diffuse[0]],dim=1)
-                img_fake = torch.cat([pred_depth_D_save[0],fake_diffuse[0]],dim=1)
-                img_G = torch.cat([pred_depth_save[0], G_diffuse[0]],dim=1)
+                max_depth = 10
+                img_real = torch.cat([add_depth_save[0]/max_depth, real_diffuse[0]/max_depth],dim=1)
+                img_fake = torch.cat([pred_depth_D_save[0]/max_depth,fake_diffuse[0]/max_depth],dim=1)
+                img_G = torch.cat([pred_depth_save[0]/max_depth, G_diffuse[0]/max_depth],dim=1)
                 img = torch.cat([img_real, img_fake, img_G], dim=2)
                 writer_train.add_image('train/before_D', img, global_step=step)
 
@@ -376,7 +378,10 @@ def train(gpu, args):
                 result = D_real_score
                 adjust = torch.sign(result) * C
                 adjust = adjust.mean().item()
-                diffuse.p = clip(diffuse.p + adjust, 0, 1)
+                if not args.reverse_noise:
+                    diffuse.p = clip(diffuse.p + adjust, 0, 1)
+                else:
+                    diffuse.p = clip(diffuse.p - adjust, 0, 1)
                 diffuse.update_T()
 
             loss_sum, loss_val = loss(sample, output)

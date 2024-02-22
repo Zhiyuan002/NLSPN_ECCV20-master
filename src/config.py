@@ -161,6 +161,9 @@ parser.add_argument('--max_depth',
                     default=10.0,
                     # default=90.0,
                     help='maximum depth')
+parser.add_argument('--reverse_noise',
+                    action='store_true',
+                    help='if set, will reverse noise')
 parser.add_argument('--augment',
                     type=bool,
                     default=True,
