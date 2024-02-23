@@ -146,20 +146,20 @@ def train(gpu, args):
     data_syn = HyperSim(csv_file, syn_dataset_root)
     # print(len(data_syn))
     sampler_train = DistributedSampler(
-        data_train, num_replicas=args.num_gpus, rank=gpu)
+        data_train, num_replicas=args.num_gpus, rank=gpu, shuffle=True)
     sampler_val = DistributedSampler(
         data_val, num_replicas=args.num_gpus, rank=gpu)
     sampler_syn = DistributedSampler(
-        data_syn, num_replicas=args.num_gpus, rank=gpu)
+        data_syn, num_replicas=args.num_gpus, rank=gpu, shuffle=True)
 
     batch_size = args.batch_size // args.num_gpus
 
     loader_train = DataLoader(
-        dataset=data_train, batch_size=batch_size, shuffle=True,
+        dataset=data_train, batch_size=batch_size, shuffle=False,
         num_workers=args.num_threads, pin_memory=True, sampler=sampler_train,
         drop_last=True)
     loader_syn = DataLoader(
-        dataset=data_syn, batch_size=batch_size, shuffle=True,
+        dataset=data_syn, batch_size=batch_size, shuffle=False,
         num_workers=args.num_threads, pin_memory=True, sampler=sampler_syn,
         drop_last=True)
     loader_val = DataLoader(
@@ -371,7 +371,7 @@ def train(gpu, args):
                 writer_train.add_image('train/before_D', img, global_step=step)
 
             ada_interval = 4
-            ada_kimg = 100  # try first, then observe
+            ada_kimg = 50  # try first, then observe
             if batch % ada_interval == 0:  #
                 # print("update T")
                 C = (loader_train.batch_size * ada_interval) / (ada_kimg * 1000)
@@ -390,7 +390,7 @@ def train(gpu, args):
             loss_sum = loss_sum / loader_train.batch_size
             loss_val = loss_val / loader_train.batch_size
 
-            loss_sum += 0.001 * G_train_loss
+            loss_sum += 0.0001 * G_train_loss
             with amp.scale_loss(loss_sum, optimizer) as scaled_loss:
                 scaled_loss.backward()
 
