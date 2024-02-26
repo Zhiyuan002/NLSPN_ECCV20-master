@@ -195,7 +195,8 @@ def train(gpu, args):
 
     # Optimizer
     optimizer, scheduler = utility.make_optimizer_scheduler(args, net)
-    D_optimizer = torch.optim.Adam(list(discr.parameters()), lr=1e-4, betas=(0, 0.99), eps=1e-8)
+    # print("!!!!")
+    D_optimizer = torch.optim.Adam(list(discr.parameters()), lr=4*1e-4, betas=(0.9, 0.99), eps=1e-8)
     net = apex.parallel.convert_syncbn_model(net)
     net, optimizer = amp.initialize(net, optimizer, opt_level=args.opt_level,
                                     verbosity=0)
@@ -390,7 +391,7 @@ def train(gpu, args):
             loss_sum = loss_sum / loader_train.batch_size
             loss_val = loss_val / loader_train.batch_size
 
-            loss_sum += 0.0001 * G_train_loss
+            loss_sum += 0.001 * G_train_loss
             with amp.scale_loss(loss_sum, optimizer) as scaled_loss:
                 scaled_loss.backward()
 
