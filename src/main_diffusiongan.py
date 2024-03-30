@@ -128,6 +128,10 @@ def d_r1_loss(real_pred, real_img):
 
     return grad_penalty
 
+def adding_noise(x_0, noise_std=0.00):
+    noise = torch.randn_like(x_0, device=x_0.device) * noise_std
+    return x_0 + noise
+
 
 def train(gpu, args):
     # Initialize workers
@@ -173,7 +177,8 @@ def train(gpu, args):
     discr = discr.cuda(gpu)
     diffuse = Diffusion().cuda()
     if args.reverse_noise:
-        diffuse.p = 1
+        diffuse.p = 0.5
+
     net = model(args)
     net.cuda(gpu)
 
@@ -196,7 +201,7 @@ def train(gpu, args):
     # Optimizer
     optimizer, scheduler = utility.make_optimizer_scheduler(args, net)
     # print("!!!!")
-    D_optimizer = torch.optim.Adam(list(discr.parameters()), lr=4*1e-4, betas=(0.9, 0.99), eps=1e-8)
+    D_optimizer = torch.optim.Adam(list(discr.parameters()), lr=1e-4, betas=(0.9, 0.99), eps=1e-8)
     net = apex.parallel.convert_syncbn_model(net)
     net, optimizer = amp.initialize(net, optimizer, opt_level=args.opt_level,
                                     verbosity=0)
@@ -295,7 +300,7 @@ def train(gpu, args):
             os.makedirs(result_dir, exist_ok=True)
 
             if batch % 5000 == 0:
-                result_file_name = "train" + str(int(batch/5000)) + '_epoch' + str(epoch) + ".png"
+                result_file_name = "train" + str(batch) + '_epoch' + str(epoch) + ".png"
                 # print(output['pred'].size())
 
                 final_pred = visualize_tensor(output['pred'][0], mode='depth', window=None, depth_min=0,
@@ -319,8 +324,13 @@ def train(gpu, args):
                 # cv2.waitKey(2000)
                 d_regularize = batch % args.d_reg_every == 0
                 add_depth = add_depth_save.requires_grad_(d_regularize)
-                real_diffuse, fake_diffuse, G_diffuse, real_t = diffuse(add_depth, pred_depth_D_save, pred_depth_save)
-
+                if not args.stable_noise:
+                    real_diffuse, fake_diffuse, G_diffuse, real_t = diffuse(add_depth, pred_depth_D_save, pred_depth_save)
+                else:
+                    real_diffuse = adding_noise(add_depth)
+                    fake_diffuse = adding_noise(pred_depth_D_save)
+                    G_diffuse = adding_noise(pred_depth_save)
+                    real_t = torch.zeros([1])
                 # Dmain: Minimize logits for generated images.
 
                 # fake_diffuse, fake_t = diffuse(pred_depth_D_save)
@@ -352,6 +362,10 @@ def train(gpu, args):
                     discr.zero_grad()
                     ( r1_loss + D_real_loss + 0 * D_real_score[0]).mean().backward()
                     D_optimizer.step()
+                else:
+                    discr.zero_grad()
+                    D_real_loss.mean().backward()
+                    D_optimizer.step()
 
                 real_t = real_t.float().mean()
                 writer_train.add_scalar('train/real_t', real_t, step)
@@ -370,20 +384,20 @@ def train(gpu, args):
                 img_G = torch.cat([pred_depth_save[0]/max_depth, G_diffuse[0]/max_depth],dim=1)
                 img = torch.cat([img_real, img_fake, img_G], dim=2)
                 writer_train.add_image('train/before_D', img, global_step=step)
-
-            ada_interval = 4
-            ada_kimg = 50  # try first, then observe
-            if batch % ada_interval == 0:  #
-                # print("update T")
-                C = (loader_train.batch_size * ada_interval) / (ada_kimg * 1000)
-                result = D_real_score
-                adjust = torch.sign(result) * C
-                adjust = adjust.mean().item()
-                if not args.reverse_noise:
-                    diffuse.p = clip(diffuse.p + adjust, 0, 1)
-                else:
-                    diffuse.p = clip(diffuse.p - adjust, 0, 1)
-                diffuse.update_T()
+            if not args.stable_noise:
+                ada_interval = 4
+                ada_kimg = 50  # try first, then observe
+                if batch % ada_interval == 0:  #
+                    # print("update T")
+                    C = (loader_train.batch_size * ada_interval) / (ada_kimg * 1000)
+                    result = D_real_score
+                    adjust = torch.sign(result) * C
+                    adjust = adjust.mean().item()
+                    if not args.reverse_noise:
+                        diffuse.p = clip(diffuse.p + adjust, 0, 1)
+                    else:
+                        diffuse.p = clip(diffuse.p - adjust, 0, 0.5)
+                    diffuse.update_T()
 
             loss_sum, loss_val = loss(sample, output)
 
@@ -467,12 +481,12 @@ def train(gpu, args):
             if batch < 20:
                 result_file_name = str(batch)+ '_epoch' + str(epoch) + ".png"
                 # print(output['pred'].size())
-                input_depth_min = output['pred'][0].min().item()
-                input_depth_max = output['pred'][0].max().item()
-                final_pred = visualize_tensor(output['pred'][0], mode='depth', window=None, depth_min=input_depth_min,
-                                              depth_max=input_depth_max)
-                gt_depth = visualize_tensor(sample['gt'][0], mode='depth', window=None, depth_min=input_depth_min,
-                                            depth_max=input_depth_max)
+                # input_depth_min = sample['gt'][0].min().item()
+                # input_depth_max = sample['gt'][0].max().item()
+                final_pred = visualize_tensor(output['pred'][0], mode='depth', window=None, depth_min=0,
+                                              depth_max=10)
+                gt_depth = visualize_tensor(sample['gt'][0], mode='depth', window=None, depth_min=0,
+                                            depth_max=10)
                 vis_full = np.vstack((final_pred, gt_depth))
                 cv2.imwrite(os.path.join(result_dir, result_file_name), vis_full)
 
@@ -629,3 +643,6 @@ if __name__ == '__main__':
     print('\n')
 
     main(args_main)
+
+
+#python main_diffusiongan.py --dir_data "/mnt/drive/Dataset/nyudepthv2" --data_name NYU  --split_json ../data_json/nyu.json --patch_height 228 --patch_width 304 --gpus 0 --loss 1.0*L1+1.0*L2 --epochs 20 --batch_size 3 --max_depth 10.0 --num_sample 500 --save diffusion --pretrain "/home/yang/yzy/NLSPN_ECCV20-master/results/model_00020.pt" --lr 2e-4 --decay 5,10,20 --reverse_noise --stable_noise

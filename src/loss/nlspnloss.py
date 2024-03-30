@@ -43,6 +43,16 @@ class NLSPNLoss(BaseLoss):
             else:
                 raise NotImplementedError
 
+            # pred_init also constrainting
+            pred = output['pred_init']
+            gt = sample['gt']
+
+            if loss_type in ['L1', 'L2']:
+                loss_tmp = loss_func(pred, gt)
+                # print("yes")
+            else:
+                raise NotImplementedError
+
             loss_tmp = loss['weight'] * loss_tmp
             loss_val.append(loss_tmp)
 

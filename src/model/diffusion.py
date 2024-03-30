@@ -115,7 +115,7 @@ class Identity(torch.nn.Module):
 class Diffusion(torch.nn.Module):
     def __init__(self,
         beta_schedule='linear', beta_start=1e-4, beta_end=2e-2,
-        t_min=10, t_max=1000, noise_std=0.05,
+        t_min=10, t_max=1000, noise_std=0.08,
         aug='no', ada_maxp=None, ts_dist='priority',
     ):
         super().__init__()

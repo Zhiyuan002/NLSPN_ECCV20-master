@@ -321,7 +321,11 @@ class NLSPNModel(nn.Module):
 
         # Encoding
         fe1_rgb = self.conv1_rgb(rgb)
-        fe1_dep = self.conv1_dep(dep)
+        dep_null = torch.zeros_like(dep)
+        fe1_dep = self.conv1_dep(dep_null)
+        # print(dep_null.sum())
+
+        # fe1_dep = self.conv1_dep(dep)
 
         fe1 = torch.cat((fe1_rgb, fe1_dep), dim=1)
 
