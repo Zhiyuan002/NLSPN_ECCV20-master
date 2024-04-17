@@ -17,6 +17,7 @@ from .common import *
 from .modulated_deform_conv_func import ModulatedDeformConvFunction
 import torch
 import torch.nn as nn
+from torchvision.ops import deform_conv2d
 
 
 class NLSPN(nn.Module):
@@ -135,10 +136,12 @@ class NLSPN(nn.Module):
                     offset_tmp[:, 1, :, :] = \
                         offset_tmp[:, 1, :, :] + ww - (self.k_f - 1) / 2
 
-                conf_tmp = ModulatedDeformConvFunction.apply(
-                    confidence, offset_tmp, modulation_dummy, self.w_conf,
-                    self.b, self.stride, 0, self.dilation, self.groups,
-                    self.deformable_groups, self.im2col_step)
+                # conf_tmp = ModulatedDeformConvFunction.apply(
+                #     confidence, offset_tmp, modulation_dummy, self.w_conf,
+                #     self.b, self.stride, 0, self.dilation, self.groups,
+                #     self.deformable_groups, self.im2col_step)
+                conf_tmp = deform_conv2d(confidence, offset_tmp, self.w_conf, self.b, (self.stride, self.stride), (0, 0),
+                              (self.dilation, self.dilation), mask=modulation_dummy)
                 list_conf.append(conf_tmp)
 
             conf_aff = torch.cat(list_conf, dim=1)
@@ -164,11 +167,12 @@ class NLSPN(nn.Module):
         return offset, aff
 
     def _propagate_once(self, feat, offset, aff):
-        feat = ModulatedDeformConvFunction.apply(
-            feat, offset, aff, self.w, self.b, self.stride, self.padding,
-            self.dilation, self.groups, self.deformable_groups, self.im2col_step
-        )
-
+        # feat = ModulatedDeformConvFunction.apply(
+        #     feat, offset, aff, self.w, self.b, self.stride, self.padding,
+        #     self.dilation, self.groups, self.deformable_groups, self.im2col_step
+        # )
+        feat = deform_conv2d(feat, offset, self.w, self.b, (self.stride, self.stride), (self.padding, self.padding),
+                      (self.dilation, self.dilation), mask=aff)  # torch>=1.8
         return feat
 
     def forward(self, feat_init, guidance, confidence=None, feat_fix=None,
@@ -348,14 +352,14 @@ class NLSPNModel(nn.Module):
         # Guidance Decoding
         gd_fd1 = self.gd_dec1(self._concat(fd2, fe2))
         guide = self.gd_dec0(self._concat(gd_fd1, fe1))
-
+        # print(guide.size())
         if self.args.conf_prop:
             # Confidence Decoding
             cf_fd1 = self.cf_dec1(self._concat(fd2, fe2))
             confidence = self.cf_dec0(self._concat(cf_fd1, fe1))
         else:
             confidence = None
-
+        # print(guide.size(),pred_init.size())
         # Diffusion
         y, y_inter, offset, aff, aff_const = \
             self.prop_layer(pred_init, guide, confidence, dep, rgb)
